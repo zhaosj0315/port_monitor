@@ -221,12 +221,12 @@ HTML = '''
                         {% if not blocked %}
                         <form method="post" action="/close" style="display:inline">
                             <input type="hidden" name="port" value="{{ port }}">
-                            <button type="submit" onclick="setTimeout(function(){location.reload();}, 800)">禁用端口</button>
+                            <button type="submit">禁用端口</button>
                         </form>
                         {% else %}
                         <form method="post" action="/open" style="display:inline">
                             <input type="hidden" name="port" value="{{ port }}">
-                            <button type="submit" onclick="setTimeout(function(){location.reload();}, 800)">放行端口</button>
+                            <button type="submit">放行端口</button>
                         </form>
                         {% endif %}
                     </div>
