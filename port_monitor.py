@@ -205,18 +205,20 @@ HTML = '''
             <button type="submit">添加端口</button>
         </form>
         <table>
-            <tr><th>端口</th><th>状态</th><th>服务名</th><th>备注</th><th>防火墙</th><th>访问日志</th><th>操作</th></tr>
+            <tr><th>端口</th><th>状态</th><th>服务名</th><th>备注</th><th>保存</th><th>防火墙</th><th>访问日志</th><th>操作</th></tr>
             {% for port, status, service, remark, blocked in ports %}
             <tr>
                 <td>{{ port }}</td>
                 <td>{% if blocked %}<span style="color:#ef4444;font-weight:bold;">已禁用</span>{% else %}<span style="color:#22c55e;font-weight:bold;">已放行</span>{% endif %}</td>
                 <td>{{ service }}</td>
                 <td>
-                    <form method="post" action="/edit_remark" class="remark-form" style="display:inline;">
+                    <form id="remark-form-{{ port }}" method="post" action="/edit_remark" class="remark-form">
                         <input type="hidden" name="port" value="{{ port }}">
                         <input type="text" name="remark" value="{{ remark }}" placeholder="备注/服务名">
-                        <button type="submit">保存</button>
                     </form>
+                </td>
+                <td>
+                    <button type="submit" form="remark-form-{{ port }}">保存</button>
                 </td>
                 <td>
                     <div style="display:flex; gap:8px; justify-content:center; align-items:center;">
