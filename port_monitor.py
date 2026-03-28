@@ -2,7 +2,9 @@ import socket
 import subprocess
 import os
 import json
-from flask import Flask, render_template_string, request, redirect, url_for
+import queue
+import threading
+from flask import Flask, render_template_string, request, redirect, url_for, Response, stream_with_context
 
 app = Flask(__name__)
 
@@ -203,7 +205,7 @@ HTML = '''
             <button type="submit">添加端口</button>
         </form>
         <table>
-            <tr><th>端口</th><th>状态</th><th>服务名</th><th>备注</th><th>防火墙</th><th>操作</th></tr>
+            <tr><th>端口</th><th>状态</th><th>服务名</th><th>备注</th><th>防火墙</th><th>访问日志</th><th>操作</th></tr>
             {% for port, status, service, remark, blocked in ports %}
             <tr>
                 <td>{{ port }}</td>
@@ -231,6 +233,7 @@ HTML = '''
                         {% endif %}
                     </div>
                 </td>
+                <td><a href="/logs/{{ port }}" target="_blank" style="color:#667eea;">📋 实时日志</a></td>
                 <td>
                     <form method="post" action="/delete" style="display:inline">
                         <input type="hidden" name="port" value="{{ port }}">
@@ -420,6 +423,105 @@ def edit_remark():
             p["remark"] = remark
     save_ports(ports)
     return redirect(url_for('index'))
+
+LOG_PAGE_HTML = '''<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>端口 {{ port }} 实时日志</title>
+    <style>
+        body { font-family: monospace; background: #0d1117; color: #c9d1d9; margin: 0; padding: 16px; }
+        h3 { color: #58a6ff; }
+        #status { font-size: 0.9em; margin-bottom: 8px; }
+        #log { white-space: pre-wrap; font-size: 0.92em; line-height: 1.6; }
+        .iface-lo0 { color: #79c0ff; }
+        .iface-en0 { color: #ffa657; }
+        a { color: #58a6ff; text-decoration: none; }
+        button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+                 padding: 4px 12px; border-radius: 6px; cursor: pointer; margin-right: 8px; }
+        button:hover { background: #30363d; }
+    </style>
+</head>
+<body>
+    <h3>端口 {{ port }} 实时访问日志</h3>
+    <div style="margin-bottom:10px;">
+        <button onclick="clearLog()">清空</button>
+        <button onclick="togglePause()">暂停</button>
+        <a href="/">← 返回</a>
+    </div>
+    <div id="status">● 连接中...</div>
+    <div id="log"></div>
+    <script>
+        const logEl = document.getElementById('log');
+        const statusEl = document.getElementById('status');
+        let paused = false, lineCount = 0;
+        const MAX_LINES = 500;
+
+        const es = new EventSource('/logs/{{ port }}/stream');
+        es.onopen = () => { statusEl.textContent = '● 实时监听中'; statusEl.style.color = '#3fb950'; };
+        es.onerror = () => { statusEl.textContent = '● 连接断开，请刷新页面'; statusEl.style.color = '#f85149'; };
+        es.onmessage = (e) => {
+            if (paused || e.data === '[keepalive]') return;
+            const line = document.createElement('div');
+            if (e.data.startsWith('[lo0]')) line.className = 'iface-lo0';
+            else if (e.data.startsWith('[en0]')) line.className = 'iface-en0';
+            line.textContent = e.data;
+            logEl.appendChild(line);
+            if (++lineCount > MAX_LINES) logEl.firstChild.remove();
+            window.scrollTo(0, document.body.scrollHeight);
+        };
+
+        function clearLog() { logEl.innerHTML = ''; lineCount = 0; }
+        function togglePause() {
+            paused = !paused;
+            const btn = document.querySelectorAll('button')[1];
+            btn.textContent = paused ? '继续' : '暂停';
+            statusEl.textContent = paused ? '⏸ 已暂停' : '● 实时监听中';
+            statusEl.style.color = paused ? '#d29922' : '#3fb950';
+        }
+    </script>
+</body>
+</html>'''
+
+@app.route("/logs/<int:port>")
+def show_port_logs(port):
+    return render_template_string(LOG_PAGE_HTML, port=port)
+
+@app.route("/logs/<int:port>/stream")
+def stream_port_logs(port):
+    def generate():
+        q = queue.Queue()
+
+        def reader(iface, proc):
+            for line in proc.stdout:
+                line = line.rstrip()
+                if line:
+                    q.put(f"[{iface}] {line}")
+
+        procs = []
+        for iface in ["lo0", "en0"]:
+            try:
+                proc = subprocess.Popen(
+                    ["sudo", "tcpdump", "-i", iface, "-n", "-tttt", "-l", f"port {port}"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+                )
+                procs.append(proc)
+                threading.Thread(target=reader, args=(iface, proc), daemon=True).start()
+            except Exception as e:
+                q.put(f"[{iface}] 启动失败: {e}")
+
+        try:
+            while True:
+                try:
+                    yield f"data: {q.get(timeout=20)}\n\n"
+                except queue.Empty:
+                    yield "data: [keepalive]\n\n"
+        except GeneratorExit:
+            for proc in procs:
+                proc.kill()
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 if __name__ == "__main__":
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
