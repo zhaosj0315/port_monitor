@@ -1,15 +1,24 @@
 import socket
 import subprocess
 import os
+import sys
 import json
 import queue
 import threading
+import time
+from datetime import datetime
 from flask import Flask, render_template_string, request, redirect, url_for, Response, stream_with_context
+
+# Add project root to sys.path to import dingtalk_helper
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 app = Flask(__name__)
 
-# 配置文件路径
-CONFIG_PATH = os.path.expanduser("~/Desktop/port_monitor/ports.json")
+# 配置文件路径：跟随仓库内的 port_monitor 目录，避免继续写回桌面旧路径
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE_DIR, "ports.json")
 
 # 默认监控端口（带备注）
 DEFAULT_PORTS = [
@@ -525,6 +534,87 @@ def stream_port_logs(port):
     return Response(stream_with_context(generate()), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+_last_port_states = {}
+_monitor_thread = None
+_monitor_thread_lock = threading.Lock()
+
+def port_status_monitor_loop():
+    print("[Info] Port status monitor background thread started.")
+    # 启动时初始化状态，不进行大面积开机误报
+    try:
+        ports = load_ports()
+        for p in ports:
+            port_num = p["port"]
+            _last_port_states[port_num] = check_port(port_num)
+    except Exception as e:
+        print(f"[Warning] Failed to initialize port states: {e}")
+
+    while True:
+        try:
+            time.sleep(120)  # 每 2 分钟检测一次
+            ports = load_ports()
+            for p in ports:
+                port_num = p["port"]
+                remark = p.get("remark", "")
+                current_state = check_port(port_num)
+                last_state = _last_port_states.get(port_num)
+
+                if last_state is not None:
+                    if last_state and not current_state:
+                        # 状态由在线变为离线 -> 报警
+                        print(f"[Alert] Port {port_num} ({remark}) went OFFLINE!")
+                        try:
+                            scripts_dir = os.path.join(PROJECT_ROOT, "scripts")
+                            if scripts_dir not in sys.path:
+                                sys.path.insert(0, scripts_dir)
+                            from dingtalk_helper import send_dingtalk_markdown
+                            send_dingtalk_markdown(
+                                "🚨 21ZHAO 服务端口离线警报",
+                                f"### 🚨 服务离线警报\n\n"
+                                f"**监控端口**: `{port_num}`\n"
+                                f"**服务备注**: `{remark}`\n"
+                                f"**当前状态**: 🔴 **OFFLINE (无法连接)**\n"
+                                f"**检测时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                                f"⚠️ 请尽快登录服务器检查该服务状态！"
+                            )
+                        except Exception as dt_err:
+                            print(f"[Error] Failed to send DingTalk offline alert: {dt_err}")
+                    elif not last_state and current_state:
+                        # 状态由离线恢复为在线 -> 通知
+                        print(f"[Info] Port {port_num} ({remark}) recovered to ONLINE.")
+                        try:
+                            scripts_dir = os.path.join(PROJECT_ROOT, "scripts")
+                            if scripts_dir not in sys.path:
+                                sys.path.insert(0, scripts_dir)
+                            from dingtalk_helper import send_dingtalk_markdown
+                            send_dingtalk_markdown(
+                                "🟢 21ZHAO 服务端口恢复通知",
+                                f"### 🟢 服务恢复通知\n\n"
+                                f"**监控端口**: `{port_num}`\n"
+                                f"**服务备注**: `{remark}`\n"
+                                f"**当前状态**: 🟢 **ONLINE (已恢复联通)**\n"
+                                f"**检测时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                            )
+                        except Exception as dt_err:
+                            print(f"[Error] Failed to send DingTalk recovery alert: {dt_err}")
+
+                _last_port_states[port_num] = current_state
+        except Exception as e:
+            print(f"[Warning] Exception in port monitor loop: {e}")
+
+def start_background_monitor():
+    """Start the port status polling thread once per process."""
+    global _monitor_thread
+    with _monitor_thread_lock:
+        if _monitor_thread and _monitor_thread.is_alive():
+            return _monitor_thread
+        _monitor_thread = threading.Thread(target=port_status_monitor_loop, daemon=True)
+        _monitor_thread.start()
+        return _monitor_thread
+
 if __name__ == "__main__":
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    # 避免 Flask 的 Debug 模式下重载启动两次线程
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not app.debug:
+        start_background_monitor()
     app.run(host="0.0.0.0", port=5005, debug=True)
