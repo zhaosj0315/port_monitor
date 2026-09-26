@@ -1,3 +1,4 @@
+import re
 import socket
 import subprocess
 import os
@@ -218,7 +219,7 @@ HTML = '''
             {% for port, status, service, remark, blocked in ports %}
             <tr>
                 <td>{{ port }}</td>
-                <td>{% if blocked %}<span style="color:#ef4444;font-weight:bold;">已禁用</span>{% else %}<span style="color:#22c55e;font-weight:bold;">已放行</span>{% endif %}</td>
+                <td>{% if status %}<span class="open">在听</span>{% else %}<span class="closed">没人听</span>{% endif %}</td>
                 <td>{{ service }}</td>
                 <td>
                     <form id="remark-form-{{ port }}" method="post" action="/edit_remark" class="remark-form">
@@ -231,7 +232,9 @@ HTML = '''
                 </td>
                 <td>
                     <div style="display:flex; gap:8px; justify-content:center; align-items:center;">
-                        {% if not blocked %}
+                        {% if not allow_pf %}
+                        <span style="color:#888;">{% if blocked %}规则里有{% else %}只读{% endif %}</span>
+                        {% elif not blocked %}
                         <form method="post" action="/close" style="display:inline">
                             <input type="hidden" name="port" value="{{ port }}">
                             <button type="submit">禁用端口</button>
@@ -315,6 +318,9 @@ def ensure_pf_include():
         with open(pf_main, "a") as f:
             f.write("\n" + include_line)
 
+def pf_changes_allowed():
+    return os.environ.get("PORT_MONITOR_ALLOW_PF") == "1"
+
 def pf_block_port(port):
     # 添加pfctl规则，阻止端口入站
     rule = f"block drop in proto tcp from any to any port {port}"
@@ -338,28 +344,18 @@ def pf_unblock_port(port):
         f.writelines(lines)
     subprocess.run(["sudo", "pfctl", "-f", "/etc/pf.conf"])
 
-def kill_port_process(port):
-    try:
-        out = subprocess.check_output(["lsof", "-tiTCP:%d" % port, "-sTCP:LISTEN"], text=True)
-        for pid in out.strip().splitlines():
-            subprocess.run(["kill", "-9", pid])
-    except Exception as e:
-        pass
-
 def scan_open_ports():
-    # 扫描本机所有监听的TCP端口
+    # macOS lsof -nP 的地址在 NAME 列，形如 127.0.0.1:5005 (LISTEN)，不在 TCP 这个词上。
     try:
-        out = subprocess.check_output(["lsof", "-iTCP", "-sTCP:LISTEN", "-Pn"], text=True)
-        ports = set()
-        for line in out.splitlines()[1:]:
-            parts = line.split()
-            for p in parts:
-                if p.startswith("TCP") and ":" in p:
-                    port = int(p.split(":")[-1])
-                    ports.add(port)
-        return sorted(list(ports))
-    except Exception as e:
+        out = subprocess.check_output(["lsof", "-iTCP", "-sTCP:LISTEN", "-nP"], text=True)
+    except Exception:
         return []
+    ports = set()
+    for line in out.splitlines()[1:]:
+        matched = re.search(r":(\d+) \(LISTEN\)", line)
+        if matched:
+            ports.add(int(matched.group(1)))
+    return sorted(ports)
 
 def pf_is_blocked(port):
     pf_conf = "/etc/pf.ports_block.conf"
@@ -392,7 +388,13 @@ def index():
                         blocked_ports.append(port)
                     except:
                         pass
-    return render_template_string(HTML, ports=port_status, new_ports=new_ports, blocked_ports=blocked_ports)
+    return render_template_string(
+        HTML,
+        ports=port_status,
+        new_ports=new_ports,
+        blocked_ports=blocked_ports,
+        allow_pf=pf_changes_allowed(),
+    )
 
 @app.route("/add", methods=["POST"])
 def add_port():
@@ -414,12 +416,16 @@ def delete_port():
 
 @app.route("/close", methods=["POST"])
 def close_port():
+    if not pf_changes_allowed():
+        return ("防火墙改写默认关闭。需要时再设 PORT_MONITOR_ALLOW_PF=1。\n", 403)
     port = int(request.form["port"])
     pf_block_port(port)
     return redirect(url_for('index'))
 
 @app.route("/open", methods=["POST"])
 def open_port():
+    if not pf_changes_allowed():
+        return ("防火墙改写默认关闭。需要时再设 PORT_MONITOR_ALLOW_PF=1。\n", 403)
     port = int(request.form["port"])
     pf_unblock_port(port)
     return redirect(url_for('index'))
@@ -614,7 +620,11 @@ def start_background_monitor():
 
 if __name__ == "__main__":
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    # 避免 Flask 的 Debug 模式下重载启动两次线程
-    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not app.debug:
-        start_background_monitor()
-    app.run(host="0.0.0.0", port=5005, debug=True)
+    start_background_monitor()
+    # 默认只绑本机、关闭调试器。端口可用 PORT_MONITOR_PORT 改开。
+    app.run(
+        host=os.environ.get("PORT_MONITOR_HOST", "127.0.0.1"),
+        port=int(os.environ.get("PORT_MONITOR_PORT", "5005")),
+        debug=False,
+        use_reloader=False,
+    )

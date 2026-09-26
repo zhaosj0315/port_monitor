@@ -1,1 +1,1 @@
-[{"port": 8501, "remark": "rag"}, {"port": 8888, "remark": "jupy"}, {"port": 8081, "remark": "21zhao"}, {"port": 8181, "remark": "todo"}, {"port": 8282, "remark": "blog"}]
+[{"port": 5005, "remark": "port_monitor"}, {"port": 8080, "remark": "example"}]

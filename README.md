@@ -1,66 +1,47 @@
-# Port Monitor
+# port_monitor
 
-> 一款基于 Python Flask 的本地端口服务监控与防火墙快速配置工具。
-> 
-> A lightweight Python Flask utility for local port service monitoring and firewall rule management.
+本机端口有没有进程在听。页面只绑 `127.0.0.1:5005`，默认不改防火墙。
 
-[English](#english) | [中文](#中文)
+A localhost page that shows whether a TCP port has a listener. It binds `127.0.0.1:5005` and does not change the firewall unless you opt in.
 
----
+## 跑起来
 
-<a name="中文"></a>
-## 中文
+```bash
+pip install flask
+python port_monitor.py
+```
 
-`Port Monitor` 旨在解决本地开发、微服务架构以及局域网运维中，多端口状态追踪不便和系统防火墙规则配置繁琐的痛点。
+浏览器打开 <http://127.0.0.1:5005>。
 
-### 功能特性
+换端口：
 
-- **端口状态实时监测**：支持自定义端口列表（如 Streamlit, FastAPI, Jupyter, Ollama 等），实时呈现通断状态。
-- **进程与服务关联**：智能识别当前占用特定端口的进程 PID、进程名称及路径，并支持一键强杀（Kill）冲突进程。
-- **简易防火墙管理**：为本地防火墙（支持 macOS `pfctl` 和 Linux `iptables`/`ufw` 探测）提供极简的开关与封禁/放行端口界面。
-- **可视化 Web UI**：内置精美的自适应网页（Responsive Dashboard），支持移动端和桌面端全屏显示，方便挂载在监控副屏。
-- **配置文件持久化**：自定义监控的端口列表与备注自动保存于 `ports.json` 中。
+```bash
+PORT_MONITOR_PORT=5055 python port_monitor.py
+```
 
-### 快速开始
+监控名单在同目录 `ports.json`。页面上半部还会列出当前没在名单里、但本机正在听的 TCP 端口，可以补进名单。
 
-1. **安装依赖**：
-   ```bash
-   pip install flask
-   ```
-2. **运行服务**：
-   ```bash
-   python port_monitor.py
-   ```
-   服务默认运行在 `http://127.0.0.1:8502`（或在 `port_monitor.py` 中配置的自定义端口）。
+## 页面上两列
 
----
+| 列 | 含义 |
+| --- | --- |
+| 在听 / 没人听 | 对 `127.0.0.1` 做一次 0.5 秒的 TCP 连接 |
+| 服务名 | `lsof -iTCP:<端口> -sTCP:LISTEN` 的进程名。没有 `lsof` 时显示 `-` |
 
-<a name="english"></a>
-## English
+这个仓库不杀进程，也不探测 Linux 的 `iptables` / `ufw`。
 
-`Port Monitor` is designed to simplify port state tracking and local firewall management for microservice developers and homelab administrators.
+## 防火墙
 
-### Features
+「禁用端口 / 放行端口」默认不出现。那两条路径会改 `/etc/pf.conf`，并执行 `sudo pfctl -f /etc/pf.conf` 和 `sudo pfctl -e`。需要时再开：
 
-- **Real-time Port Telemetry**: Monitor the connection status of custom ports (e.g. Streamlit, FastAPI, Jupyter, Ollama) on a single responsive dashboard.
-- **Process Binding Insights**: Auto-detect process name, PID, and executable path binding to a specific port, with one-click terminal kill support.
-- **Firewall Integration**: A simplified interface for managing local firewall rule blocks and allows (supports macOS `pfctl` and Linux `ufw`/`iptables` wrappers).
-- **Responsive Dashboard**: Beautiful web UI built with embedded styles, optimized for both desktop side-car screens and mobile devices.
-- **Persistent Configuration**: Custom port lists and metadata are dynamically saved in `ports.json`.
+```bash
+PORT_MONITOR_ALLOW_PF=1 python port_monitor.py
+```
 
-### Quick Start
+没开这个环境变量时，`POST /close` 和 `POST /open` 返回 403，不会写系统文件。
 
-1. **Install Dependencies**:
-   ```bash
-   pip install flask
-   ```
-2. **Run Utility**:
-   ```bash
-   python port_monitor.py
-   ```
-
----
+`/logs/<端口>` 会为该端口启动 `sudo tcpdump`。没配免密 sudo 时，日志页连不上，端口名单页面不受影响。
 
 ## License
 
-MIT License © 2025
+MIT. See [LICENSE](LICENSE).
